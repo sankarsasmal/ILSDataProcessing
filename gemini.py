@@ -1064,7 +1064,7 @@ try:
         if "H2" in df.columns and "N2" in df.columns:
             h2_arr = pd.to_numeric(df["H2"], errors="coerce")
             n2_arr = pd.to_numeric(df["N2"], errors="coerce")
-            df["Nap/H2_GC"] = ((100 - (h2_arr + n2_arr)) * 110) / (h2_arr * 2)
+            df["Nap/H2_GC"] = ((100 - (h2_arr + n2_arr)) * 100) / (h2_arr * 2) # Naphtha avg. mass considered as 100
         else:
             df["Nap/H2_GC"] = np.nan
 
@@ -1187,4 +1187,5 @@ try:
 
 except Exception as e:
     st.error(f"Error calculating Nap/H2 Ratio: {e}")
+
 
