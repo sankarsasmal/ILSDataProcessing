@@ -919,15 +919,16 @@ st.markdown(
 
 try:
     # -----------------------------
-    # Column sets
+    # Column names (NO "\PV")
     # -----------------------------
     fic_cols = [f"01i14FIC{i:02d}" for i in range(1, 9)]
+    fi01_col = "01i14FI01"
     fic2_cols = [f"02i2FIC{i:02d}" for i in range(1, 9)]
 
     # -----------------------------
     # Basic validation on df
     # -----------------------------
-    required_df_cols = ["Reactor", "01i14FI01"] + fic_cols + fic2_cols
+    required_df_cols = ["Reactor", fi01_col] + fic_cols
     missing = [c for c in required_df_cols if c not in df.columns]
     if missing:
         st.warning(
@@ -963,108 +964,163 @@ try:
             valid = (idx >= 0) & (idx < 8)
             col_idx = np.where(valid, idx, 0).astype(int)
             rows = np.arange(len(df))
-            fic_df_num = df[fic_cols].apply(pd.to_numeric, errors="coerce")
+
+            # Treat negatives as zero
+            fic_df_num = (
+                df[fic_cols].apply(pd.to_numeric, errors="coerce").clip(lower=0)
+            )
             fic_mat = fic_df_num.to_numpy()
 
             chosen_fic = np.where(valid, fic_mat[rows, col_idx], np.nan)
-            den = fic_df_num.sum(axis=1).replace(0, np.nan)
+            # Ignore zero FIC values
+            chosen_fic = np.where(chosen_fic == 0, np.nan, chosen_fic)
 
-            fi01 = pd.to_numeric(df["01i14FI01"], errors="coerce")
-            df["H2_massFlow"] = (fi01 * chosen_fic) / den
+            # Denominator: sum of FICs ignoring zeros
+            den = fic_df_num.replace(0, np.nan).sum(axis=1).replace(0, np.nan)
+
+            fi01_series = pd.to_numeric(df[fi01_col], errors="coerce").clip(lower=0)
+            df["H2_massFlow"] = (fi01_series * chosen_fic) / den
 
         # =======================================================
         # MODE 2: NEW CALCULATION (FIC Time-Averaged Data)
-        # Missing columns in df_to_display → treated as 0
+        # Per-reactor constant computed from df_to_display averages
         # =======================================================
         else:
-            # Fill missing df_to_display columns with zero
-            required_avg_cols = ["01i14FI01"] + fic_cols
-            missing_avg = [
-                c for c in required_avg_cols if c not in df_to_display.columns
-            ]
+            # Ensure required columns exist in df_to_display
+            for c in [fi01_col] + fic_cols:
+                if c not in df_to_display.columns:
+                    df_to_display[c] = np.nan  # will be ignored appropriately
 
-            if missing_avg:
-                st.warning(
-                    f"'df_to_display' missing columns: {missing_avg}. "
-                    "Missing values will be treated as 0."
-                )
-                for col in missing_avg:
-                    df_to_display[col] = 0
+            # Helper: FIC avg = mean over positive values only (negatives→0, zeros ignored)
+            def fic_positive_mean(s: pd.Series) -> float:
+                s_num = pd.to_numeric(s, errors="coerce").clip(lower=0)
+                s_pos = s_num.replace(0, np.nan)
+                return float(s_pos.mean()) if s_pos.notna().any() else 0.0
 
-            computed_from_avg = False
+            # Helper: FI01 avg = mean with negatives→0 (zeros allowed)
+            def fi01_nonneg_mean(s: pd.Series) -> float:
+                s_num = pd.to_numeric(s, errors="coerce").clip(lower=0)
+                return float(s_num.fillna(0).mean())
 
-            # CASE A — Index-aligned
-            if (len(df_to_display) == len(df)) and df_to_display.index.equals(df.index):
-                fi01_avg = pd.to_numeric(df_to_display["01i14FI01"], errors="coerce")
-                fic01_avg = pd.to_numeric(df_to_display["01i14FIC01"], errors="coerce")
+            fi01_avg_val = fi01_nonneg_mean(df_to_display[fi01_col])
 
-                den_avg = (
-                    df_to_display[fic_cols].apply(pd.to_numeric).fillna(0).sum(axis=1)
-                )
-                den_avg = den_avg.replace(0, np.nan)
+            fic_avgs = np.array(
+                [fic_positive_mean(df_to_display[c]) for c in fic_cols], dtype=float
+            )
 
-                df["H2_massFlow"] = (fi01_avg * fic01_avg) / den_avg
-                computed_from_avg = True
+            # Denominator: sum of positive FIC averages (ignore zeros)
+            den_avg = fic_avgs[fic_avgs > 0].sum()
+            den_avg = np.nan if den_avg == 0 else den_avg
 
-            # CASE B — Merge on TOS_h
-            elif "TOS_h" in df.columns and "TOS_h" in df_to_display.columns:
-                avg_cols = ["TOS_h", "01i14FI01"] + fic_cols
-                merged = df.merge(
-                    df_to_display[avg_cols],
-                    on="TOS_h",
-                    how="left",
-                    suffixes=("", "_avg"),
-                )
+            # Per-reactor H2_massFlow (constant per reactor)
+            h2mf_by_reactor = {}
+            for r in range(1, 9):
+                fic_r_avg = fic_avgs[r - 1]
+                if not np.isfinite(den_avg):
+                    h2mf_by_reactor[r] = np.nan
+                else:
+                    h2mf_by_reactor[r] = (fi01_avg_val * fic_r_avg) / den_avg
 
-                fi01_avg = pd.to_numeric(merged["01i14FI01_avg"], errors="coerce")
-                fic01_avg = pd.to_numeric(merged["01i14FIC01_avg"], errors="coerce")
-
-                fic_cols_avg = [c + "_avg" for c in fic_cols]
-                den_avg = (
-                    merged[fic_cols_avg].apply(pd.to_numeric).fillna(0).sum(axis=1)
-                )
-                den_avg = den_avg.replace(0, np.nan)
-
-                df["H2_massFlow"] = (fi01_avg * fic01_avg) / den_avg
-                computed_from_avg = True
-
-            # FINAL FALLBACK — calculate NEW formula on df
-            if not computed_from_avg:
-                fi01 = pd.to_numeric(df["01i14FI01"], errors="coerce")
-                fic01 = pd.to_numeric(df["01i14FIC01"], errors="coerce")
-                den = (
-                    df[fic_cols]
-                    .apply(pd.to_numeric)
-                    .fillna(0)
-                    .sum(axis=1)
-                    .replace(0, np.nan)
-                )
-
-                df["H2_massFlow"] = (fi01 * fic01) / den
+            # Map constant back into df by reactor
+            reactor_num = pd.to_numeric(df["Reactor"], errors="coerce")
+            df["H2_massFlow"] = reactor_num.map(pd.Series(h2mf_by_reactor))
 
         # =======================================================
-        # Continue with the rest of your logic (unchanged)
+        # Supplied H2 (02i2FICxx): MUST come from df_to_display
+        # Treat negatives as zero and ignore zero FIC value
         # =======================================================
-        # Select supplied H2 based on reactor mapping from 02i2FICxx
-        fic2_df_num = df[fic2_cols].apply(pd.to_numeric, errors="coerce")
-        fic2_mat = fic2_df_num.to_numpy()
+        # Ensure fic2 columns exist in df_to_display (or create NaNs)
+        for c in fic2_cols:
+            if c not in df_to_display.columns:
+                df_to_display[c] = np.nan
 
-        idx = pd.to_numeric(df["Reactor"], errors="coerce").to_numpy() - 1
-        valid = (idx >= 0) & (idx < 8)
-        col_idx = np.where(valid, idx, 0).astype(int)
-        rows = np.arange(len(df))
+        def pick_chosen_h2_from(source_df: pd.DataFrame) -> np.ndarray:
+            fic2_df_num = (
+                source_df[fic2_cols].apply(pd.to_numeric, errors="coerce").clip(lower=0)
+            )
+            fic2_mat = fic2_df_num.replace(0, np.nan).to_numpy()  # zeros ignored
 
-        chosen_h2 = np.where(valid, fic2_mat[rows, col_idx], np.nan)
+            idx_local = pd.to_numeric(df["Reactor"], errors="coerce").to_numpy() - 1
+            valid_local = (idx_local >= 0) & (idx_local < 8)
+            col_idx_local = np.where(valid_local, idx_local, 0).astype(int)
+            rows_local = np.arange(len(df))
+            # Safe column index (if some fic2 cols were missing)
+            col_idx_local = np.clip(col_idx_local, 0, fic2_mat.shape[1] - 1)
+            return np.where(valid_local, fic2_mat[rows_local, col_idx_local], np.nan)
+
+        chosen_h2 = None
+
+        # Try index-aligned
+        if (len(df_to_display) == len(df)) and df_to_display.index.equals(df.index):
+            chosen_h2 = pick_chosen_h2_from(df_to_display)
+
+        # Else try to merge on TOS_h
+        elif ("TOS_h" in df.columns) and ("TOS_h" in df_to_display.columns):
+            merged = df.merge(
+                df_to_display[["TOS_h"] + fic2_cols],
+                on="TOS_h",
+                how="left",
+                suffixes=("", "_src"),
+            )
+            fic2_df_num = (
+                merged[fic2_cols].apply(pd.to_numeric, errors="coerce").clip(lower=0)
+            )
+            fic2_mat = fic2_df_num.replace(0, np.nan).to_numpy()
+
+            idx_m = pd.to_numeric(merged["Reactor"], errors="coerce").to_numpy() - 1
+            valid_m = (idx_m >= 0) & (idx_m < 8)
+            col_idx_m = np.clip(
+                np.where(valid_m, idx_m, 0).astype(int), 0, fic2_mat.shape[1] - 1
+            )
+            rows_m = np.arange(len(merged))
+            tmp = np.where(valid_m, fic2_mat[rows_m, col_idx_m], np.nan)
+
+            # Put back in original df's order
+            df["__tmp_h2__"] = np.nan
+            df.loc[merged.index, "__tmp_h2__"] = tmp
+            chosen_h2 = df["__tmp_h2__"].to_numpy()
+            df.drop(columns=["__tmp_h2__"], inplace=True)
+
+        # Else try to merge on Time
+        elif ("Time" in df.columns) and ("Time" in df_to_display.columns):
+            merged = df.merge(
+                df_to_display[["Time"] + fic2_cols],
+                on="Time",
+                how="left",
+                suffixes=("", "_src"),
+            )
+            fic2_df_num = (
+                merged[fic2_cols].apply(pd.to_numeric, errors="coerce").clip(lower=0)
+            )
+            fic2_mat = fic2_df_num.replace(0, np.nan).to_numpy()
+
+            idx_m = pd.to_numeric(merged["Reactor"], errors="coerce").to_numpy() - 1
+            valid_m = (idx_m >= 0) & (idx_m < 8)
+            col_idx_m = np.clip(
+                np.where(valid_m, idx_m, 0).astype(int), 0, fic2_mat.shape[1] - 1
+            )
+            rows_m = np.arange(len(merged))
+            tmp = np.where(valid_m, fic2_mat[rows_m, col_idx_m], np.nan)
+
+            df["__tmp_h2__"] = np.nan
+            df.loc[merged.index, "__tmp_h2__"] = tmp
+            chosen_h2 = df["__tmp_h2__"].to_numpy()
+            df.drop(columns=["__tmp_h2__"], inplace=True)
+
+        # Absolute fallback (should rarely trigger)
+        if chosen_h2 is None:
+            chosen_h2 = np.full(len(df), np.nan)
+
+        # Compute Nap/H2_mass ratio (safe division)
         h2mf = pd.to_numeric(df["H2_massFlow"], errors="coerce").to_numpy()
-        h2mf_safe = np.where((h2mf == 0) | (~np.isfinite(h2mf)), np.nan, h2mf)
-
+        h2mf_safe = np.where((h2mf <= 0) | (~np.isfinite(h2mf)), np.nan, h2mf)
         df["Nap/H2_mass ratio"] = chosen_h2 / h2mf_safe
 
         # GC calculation
         if "H2" in df.columns and "N2" in df.columns:
             h2_arr = pd.to_numeric(df["H2"], errors="coerce")
             n2_arr = pd.to_numeric(df["N2"], errors="coerce")
-            df["Nap/H2_GC"] = ((100 - (h2_arr + n2_arr)) * 100) / (h2_arr * 2) # Naphtha avg. mass considered as 100
+            df["Nap/H2_GC"] = ((100 - (h2_arr + n2_arr)) * 100) / (h2_arr * 2)
         else:
             df["Nap/H2_GC"] = np.nan
 
@@ -1077,7 +1133,6 @@ try:
 
         # Plot UI
         plot_ph = st.empty()
-
         with st.container():
             reactors_num = sorted(
                 df1["Reactor_num"].dropna().unique().astype(int).tolist()
@@ -1100,36 +1155,26 @@ try:
             )
 
             fig_ratio = go.Figure()
-
-            # ================================
-            # SAME #99CC00 SHADE SYSTEM
-            # ================================
             from plotly.colors import n_colors
 
             reactors_in_plot = sel_r_ratio
-
             if len(reactors_in_plot) == 1:
-                palette = ["#99CC00"]  # Same brand green
+                palette = ["#99CC00"]
             else:
                 base_rgb = (153, 204, 0)  # #99CC00
                 light_rgb = [min(255, int(c + (255 - c) * 0.65)) for c in base_rgb]
                 dark_rgb = [max(0, int(c * 0.55)) for c in base_rgb]
-
                 palette = n_colors(
                     f"rgb({light_rgb[0]},{light_rgb[1]},{light_rgb[2]})",
                     f"rgb({dark_rgb[0]},{dark_rgb[1]},{dark_rgb[2]})",
                     len(reactors_in_plot),
                     colortype="rgb",
                 )
-
             color_map_ratio = {
                 reactors_in_plot[i]: palette[i] for i in range(len(reactors_in_plot))
             }
 
-            # ================================
-            # PLOT TRACES
-            # ================================
-            for i, r in enumerate(sel_r_ratio):
+            for r in sel_r_ratio:
                 d = df1_filtered[df1_filtered["Reactor_num"] == r]
                 color = color_map_ratio[r]
                 sigma = std_by_r.get(r, np.nan)
@@ -1139,7 +1184,6 @@ try:
                     else f"Reactor {r} (σ=NA)"
                 )
 
-                # Supplied
                 fig_ratio.add_trace(
                     go.Scatter(
                         x=d["TOS_h"],
@@ -1150,8 +1194,6 @@ try:
                         marker=dict(size=6),
                     )
                 )
-
-                # Measured
                 fig_ratio.add_trace(
                     go.Scatter(
                         x=d["TOS_h"],
@@ -1163,9 +1205,6 @@ try:
                     )
                 )
 
-            # ================================
-            # LAYOUT
-            # ================================
             fig_ratio.update_layout(
                 template="plotly_dark",
                 paper_bgcolor="#0A0A0A",
@@ -1181,11 +1220,8 @@ try:
                     font=dict(color="white"),
                 ),
             )
-
             fig_ratio.update_yaxes(gridcolor="#32322f")
             plot_ph.plotly_chart(fig_ratio, use_container_width=True)
 
 except Exception as e:
-    st.error(f"Error calculating Nap/H2 Ratio: {e}")
-
-
+    st.error(f"Error calculating Nap/H2 Ratio: {repr(e)}")
