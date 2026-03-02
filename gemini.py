@@ -160,7 +160,7 @@ if fl is None:
 # Efficient Data Loading
 file_extension = fl.name.split(".")[-1].lower()
 if file_extension in ["csv", "txt"]:
-    df_raw = pd.read_csv(fl, delimiter="\t", encoding="mbcs")
+    df_raw = pd.read_csv(fl, delimiter="\t", encoding="cp1252")
 elif file_extension in ["xlsx", "xls"]:
     df_raw = pd.read_excel(fl)
 else:
@@ -1345,3 +1345,4 @@ try:
 
 except Exception as e:
     st.error(f"Error calculating Nap/H2 Ratio: {repr(e)}")
+
