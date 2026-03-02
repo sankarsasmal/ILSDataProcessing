@@ -160,22 +160,143 @@ if fl is None:
 # Efficient Data Loading
 file_extension = fl.name.split(".")[-1].lower()
 if file_extension in ["csv", "txt"]:
-    df_raw = pd.read_csv(fl, delimiter="\t", encoding="cp1252")
+    df_raw = pd.read_csv(fl, delimiter="\t", encoding="mbcs")
 elif file_extension in ["xlsx", "xls"]:
     df_raw = pd.read_excel(fl)
 else:
     st.error("Unsupported file type")
     st.stop()
 
+# =====================================================================
+# 2.1 Calibration Correction for H2
+# =====================================================================
+
+# ---- Calibration table for H2 (from your data) ----
+calib_h2 = pd.DataFrame(
+    {
+        "H2 Conc[Vol%]": [19.77, 39.87, 59.76, 79.57],
+        "Area": [4556250, 9023977, 13285364, 17515766],  # not used in calc
+        "RF": [4.34e-06, 4.42e-06, 4.50e-06, 4.54e-06],
+    }
+)
+
+H2_CONC_COL = "Conc_H2"  # H2 concentration column in df_raw (Vol%)
+H2_AREA_COL = "Area_H2"  # Area column for H2 in df_raw
+
+
+# Validate presence
+missing_cols = [col for col in [H2_CONC_COL, H2_AREA_COL] if col not in df_raw.columns]
+if missing_cols:
+    st.error(
+        f"Missing required column(s): {missing_cols}. "
+        f"Please ensure your file contains '{H2_CONC_COL}' and '{H2_AREA_COL}'."
+    )
+    st.stop()
+
+# Ensure numeric
+df_raw[H2_CONC_COL] = pd.to_numeric(df_raw[H2_CONC_COL], errors="coerce")
+df_raw[H2_AREA_COL] = pd.to_numeric(df_raw[H2_AREA_COL], errors="coerce")
+
+# ===========================
+# Extrapolate RF to 10 and 100
+# ===========================
+x = calib_h2["H2 Conc[Vol%]"].to_numpy()
+y = calib_h2["RF"].to_numpy()
+
+use_quadratic = False  # set True if you want to try deg=2; linear is default/safest
+
+if use_quadratic and len(x) >= 3:
+    # Quadratic fit (more flexible but risky with extrapolation)
+    coeffs = np.polyfit(x, y, deg=2)  # y = a*x^2 + b*x + c
+    poly = np.poly1d(coeffs)
+    deg_used = 2
+else:
+    # Linear fit (robust for small datasets and safer extrapolation)
+    coeffs = np.polyfit(x, y, deg=1)  # y = m*x + c
+    poly = np.poly1d(coeffs)
+    deg_used = 1
+
+# Predict RF at endpoints 10 and 100
+rf_at_10 = float(poly(10.0))
+rf_at_100 = float(poly(100.0))
+
+# Guard against negative RF due to odd fits (rare with your data)
+rf_at_10 = max(rf_at_10, 0.0)
+rf_at_100 = max(rf_at_100, 0.0)
+
+# Build extended calibration grid using the original points and the extrapolated endpoints
+extended_calib = (
+    pd.DataFrame(
+        {
+            "H2 Conc[Vol%]": [10.0, 19.77, 39.87, 59.76, 79.57, 100.0],
+            "RF": [rf_at_10, *y, rf_at_100],
+        }
+    )
+    .sort_values("H2 Conc[Vol%]")
+    .reset_index(drop=True)
+)
+
+with st.expander("↕ Expand to see H2 calibration table", expanded=False):
+    st.dataframe(
+        extended_calib,
+        use_container_width=True,
+        column_config={
+            "RF": st.column_config.NumberColumn(format="%.6e"),
+            "H2 Conc[Vol%]": st.column_config.NumberColumn(format="%.2f"),
+        },
+        hide_index=True,
+    )
+
+
+# Compute simple R^2 on original points for transparency
+y_pred_on_train = poly(x)
+ss_res = np.sum((y - y_pred_on_train) ** 2)
+ss_tot = np.sum((y - np.mean(y)) ** 2) if len(y) > 1 else 0.0
+r2 = 1 - ss_res / ss_tot if ss_tot > 0 else 1.0
+st.info(
+    f"RF fit degree = {deg_used}, R² on original points = {r2:.5f}. "
+    f"Extrapolated RF(10%)={rf_at_10:.6g}, RF(100%)={rf_at_100:.6g}"
+)
+
+# ===========================
+# Assign RF to each row
+# ===========================
+# We will use interpolation within [10, 100] and *clip* to endpoints outside that range.
+# This avoids noisy nearest-neighbor jumps and ensures smooth mapping.
+x_ext = extended_calib["H2 Conc[Vol%]"].to_numpy()
+y_ext = extended_calib["RF"].to_numpy()
+
+# Clip H2 conc into [10, 100] to avoid wild extrapolation beyond the fit
+conc_vals = df_raw[H2_CONC_COL].to_numpy()
+conc_clipped = np.clip(conc_vals, x_ext.min(), x_ext.max())
+
+# Interpolate RF for each row
+rf_interp = np.interp(conc_clipped, x_ext, y_ext)
+
+# Add RF and corrected concentration
+df_raw["RF_H2"] = rf_interp
+df_raw["H2_corrected_conc"] = df_raw[H2_AREA_COL] * df_raw["RF_H2"]
+
+
+# =====================================================================
+
+
 # Optimized Cleaning Operations
 df = df_raw.replace({"ÿ": 0}, regex=True)
 df.dropna(subset=["Date/Time"], inplace=True)
-cols_to_drop = df.filter(regex="Conc|Name|RT|Area|GC").columns
-df.drop(columns=cols_to_drop, inplace=True)
 
-# Clean Column Names
-df.columns = df.columns.str.replace("ESTD_|Sampled_", "", regex=True)
+# Keep these despite the regex drop
+keep_cols = {H2_CONC_COL, H2_AREA_COL, "RF_H2", "H2_corrected_conc"}
+cols_to_drop = [
+    c
+    for c in df.columns
+    if re.search(r"(Conc|Name|RT|Area|GC)", c) and c not in keep_cols
+]
+if cols_to_drop:
+    df.drop(columns=cols_to_drop, inplace=True)
 
+df.columns = df.columns.str.replace("ESTD_", "")
+df.columns = df.columns.str.replace("Sampled_", "")
 # Datetime & TOS Processing
 df["Date/Time"] = pd.to_datetime(df["Date/Time"], format="%d.%m.%Y %H:%M:%S")
 df.insert(1, "Time", df["Date/Time"].dt.time)
@@ -388,7 +509,6 @@ with st.expander("⚙️ Optional: 14400-point (2 Hrs) Moving Average", expanded
             st.error(f"Error processing flow data: {e}")
     else:
         st.info("Upload a CSV to configure filters and enable processing.")
-
 
 # =====================================================================
 # 4. Data Range & Reactor Selection
@@ -604,7 +724,7 @@ st.markdown(
     "<div class='section-header'>Cleaned Data Export</div>", unsafe_allow_html=True
 )
 with st.expander("↕ Expand to view and xport", expanded=False):
-    st.dataframe(r_df.head(50), use_container_width=True)
+    st.dataframe(r_df.head(500), use_container_width=True)
 
 all_cols = list(r_df.columns)
 select_all = st.checkbox("⇦ Select All", value=False)
