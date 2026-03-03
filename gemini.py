@@ -1159,104 +1159,110 @@ try:
             df["H2_massFlow"] = reactor_num.map(pd.Series(h2mf_by_reactor))
 
         # =======================================================
-        # Supplied H2 (02i2FICxx): MUST come from df_to_display
-        # Treat negatives as zero and ignore zero FIC value
+        # SUPPLIED H2 (02i2FICxx): source depends on calc_mode
+        #   - Point Data:      read 02i2FICxx from df (no file needed)
+        #   - Time-Averaged:   read 02i2FICxx from df_to_display (requires file)
         # =======================================================
-        # Ensure fic2 columns exist in df_to_display (or create NaNs)
-        for c in fic2_cols:
-            if c not in df_to_display.columns:
-                df_to_display[c] = np.nan
 
-        def pick_chosen_h2_from(source_df: pd.DataFrame) -> np.ndarray:
+        def pick_chosen_h2_from(
+            source_df: pd.DataFrame, reactor_series: pd.Series
+        ) -> np.ndarray:
+            """
+            Selects 02i2FICxx column per row based on reactor number.
+            - Treat negatives as zero
+            - Treat zeros as NaN (ignored)
+            """
+            # Ensure fic2 columns exist in source (missing -> NaN)
+            missing_fic2 = [c for c in fic2_cols if c not in source_df.columns]
+            if missing_fic2:
+                # Create missing columns as NaN; they will be ignored
+                for c in missing_fic2:
+                    source_df[c] = np.nan
+
             fic2_df_num = (
                 source_df[fic2_cols].apply(pd.to_numeric, errors="coerce").clip(lower=0)
             )
             fic2_mat = fic2_df_num.replace(0, np.nan).to_numpy()  # zeros ignored
 
-            idx_local = pd.to_numeric(df["Reactor"], errors="coerce").to_numpy() - 1
+            idx_local = pd.to_numeric(reactor_series, errors="coerce").to_numpy() - 1
             valid_local = (idx_local >= 0) & (idx_local < 8)
             col_idx_local = np.where(valid_local, idx_local, 0).astype(int)
-            rows_local = np.arange(len(df))
-            # Safe column index (if some fic2 cols were missing)
             col_idx_local = np.clip(col_idx_local, 0, fic2_mat.shape[1] - 1)
+
+            rows_local = np.arange(len(reactor_series))
             return np.where(valid_local, fic2_mat[rows_local, col_idx_local], np.nan)
 
         chosen_h2 = None
 
-        # Try index-aligned
-        if (len(df_to_display) == len(df)) and df_to_display.index.equals(df.index):
-            chosen_h2 = pick_chosen_h2_from(df_to_display)
+        if calc_mode == "FIC Point Data":
+            # -------- POINT DATA: take 02i2FICxx from df directly --------
+            chosen_h2 = pick_chosen_h2_from(df, df["Reactor"])
 
-        # Else try to merge on TOS_h
-        elif ("TOS_h" in df.columns) and ("TOS_h" in df_to_display.columns):
-            merged = df.merge(
-                df_to_display[["TOS_h"] + fic2_cols],
-                on="TOS_h",
-                how="left",
-                suffixes=("", "_src"),
-            )
-            fic2_df_num = (
-                merged[fic2_cols].apply(pd.to_numeric, errors="coerce").clip(lower=0)
-            )
-            fic2_mat = fic2_df_num.replace(0, np.nan).to_numpy()
+        else:
+            # -------- TIME-AVERAGED: take 02i2FICxx from df_to_display --------
+            # Safety: require df_to_display to exist and be a DataFrame
+            if "df_to_display" not in globals() or not isinstance(
+                df_to_display, pd.DataFrame
+            ):
+                st.error("Please Upload The Flow Data and Enable Processing")
+                # Fallback to NaNs to avoid NameError downstream
+                chosen_h2 = np.full(len(df), np.nan)
+            else:
+                # Try fast path: same length and aligned index
+                if (len(df_to_display) == len(df)) and df_to_display.index.equals(
+                    df.index
+                ):
+                    chosen_h2 = pick_chosen_h2_from(df_to_display, df["Reactor"])
 
-            idx_m = pd.to_numeric(merged["Reactor"], errors="coerce").to_numpy() - 1
-            valid_m = (idx_m >= 0) & (idx_m < 8)
-            col_idx_m = np.clip(
-                np.where(valid_m, idx_m, 0).astype(int), 0, fic2_mat.shape[1] - 1
-            )
-            rows_m = np.arange(len(merged))
-            tmp = np.where(valid_m, fic2_mat[rows_m, col_idx_m], np.nan)
+                # Else try merge on TOS_h
+                elif ("TOS_h" in df.columns) and ("TOS_h" in df_to_display.columns):
+                    merged = df.merge(
+                        df_to_display[["TOS_h"] + fic2_cols],
+                        on="TOS_h",
+                        how="left",
+                        suffixes=("", "_src"),
+                    )
+                    tmp = pick_chosen_h2_from(merged, merged["Reactor"])
+                    # map result back to original order
+                    df["__tmp_h2__"] = np.nan
+                    df.loc[merged.index, "__tmp_h2__"] = tmp
+                    chosen_h2 = df["__tmp_h2__"].to_numpy()
+                    df.drop(columns=["__tmp_h2__"], inplace=True)
 
-            # Put back in original df's order
-            df["__tmp_h2__"] = np.nan
-            df.loc[merged.index, "__tmp_h2__"] = tmp
-            chosen_h2 = df["__tmp_h2__"].to_numpy()
-            df.drop(columns=["__tmp_h2__"], inplace=True)
+                # Else try merge on Time
+                elif ("Time" in df.columns) and ("Time" in df_to_display.columns):
+                    merged = df.merge(
+                        df_to_display[["Time"] + fic2_cols],
+                        on="Time",
+                        how="left",
+                        suffixes=("", "_src"),
+                    )
+                    tmp = pick_chosen_h2_from(merged, merged["Reactor"])
+                    df["__tmp_h2__"] = np.nan
+                    df.loc[merged.index, "__tmp_h2__"] = tmp
+                    chosen_h2 = df["__tmp_h2__"].to_numpy()
+                    df.drop(columns=["__tmp_h2__"], inplace=True)
 
-        # Else try to merge on Time
-        elif ("Time" in df.columns) and ("Time" in df_to_display.columns):
-            merged = df.merge(
-                df_to_display[["Time"] + fic2_cols],
-                on="Time",
-                how="left",
-                suffixes=("", "_src"),
-            )
-            fic2_df_num = (
-                merged[fic2_cols].apply(pd.to_numeric, errors="coerce").clip(lower=0)
-            )
-            fic2_mat = fic2_df_num.replace(0, np.nan).to_numpy()
+                # Absolute fallback (rare)
+                else:
+                    chosen_h2 = np.full(len(df), np.nan)
 
-            idx_m = pd.to_numeric(merged["Reactor"], errors="coerce").to_numpy() - 1
-            valid_m = (idx_m >= 0) & (idx_m < 8)
-            col_idx_m = np.clip(
-                np.where(valid_m, idx_m, 0).astype(int), 0, fic2_mat.shape[1] - 1
-            )
-            rows_m = np.arange(len(merged))
-            tmp = np.where(valid_m, fic2_mat[rows_m, col_idx_m], np.nan)
-
-            df["__tmp_h2__"] = np.nan
-            df.loc[merged.index, "__tmp_h2__"] = tmp
-            chosen_h2 = df["__tmp_h2__"].to_numpy()
-            df.drop(columns=["__tmp_h2__"], inplace=True)
-
-        # Absolute fallback (should rarely trigger)
-        if chosen_h2 is None:
-            chosen_h2 = np.full(len(df), np.nan)
-
+        # =======================================================
         # Compute Nap/H2_mass ratio (safe division)
+        # =======================================================
         h2mf = pd.to_numeric(df["H2_massFlow"], errors="coerce").to_numpy()
         h2mf_safe = np.where((h2mf <= 0) | (~np.isfinite(h2mf)), np.nan, h2mf)
         df["Nap/H2_mass ratio"] = chosen_h2 / h2mf_safe
 
-        # GC calculation
+        # =======================================================
+        # GC-based Nap/H2 from H2 & N2 (already in your pipeline)
+        # =======================================================
         if "H2" in df.columns and "N2" in df.columns:
             h2_arr = pd.to_numeric(df["H2"], errors="coerce")
             n2_arr = pd.to_numeric(df["N2"], errors="coerce")
             df["Nap/H2_GC"] = ((100 - (h2_arr + n2_arr)) * 100) / (h2_arr * 2)
         else:
             df["Nap/H2_GC"] = np.nan
-
         # Prepare for plotting
         df1 = df[
             ["TOS_h", "Reactor", "H2_massFlow", "Nap/H2_mass ratio", "Nap/H2_GC"]
