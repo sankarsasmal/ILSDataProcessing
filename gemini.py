@@ -314,8 +314,20 @@ if "reactor" in df.columns:
 
 df.insert(0, "ID", range(len(df)))
 
+# --- RF Correction Toggle ---
+rf_correction = st.toggle("RF Correction ON", value=False)
+
 with st.expander("📰 View Cleaned Raw Dataset", expanded=False):
     st.dataframe(df.head(500), use_container_width=True)
+
+# Ensure the required columns exist
+if {"Area_H2", "RF_H2"}.issubset(df.columns):
+    if rf_correction:
+        df["H2"] = df["H2_corrected_conc"].astype(float)
+    else:
+        df["H2"] = df["H2"]  # keep original values
+else:
+    st.warning("Area_H2 or RF column missing — cannot apply RF correction.")
 
 # =====================================================================
 # 3. Flow Data Processing (Moving Average & Summary)
@@ -1345,4 +1357,3 @@ try:
 
 except Exception as e:
     st.error(f"Error calculating Nap/H2 Ratio: {repr(e)}")
-
