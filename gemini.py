@@ -8,6 +8,7 @@ import csv
 from plotly.colors import n_colors
 import re
 import streamlit.components.v1 as components
+from plotly.colors import n_colors
 
 # =====================================================================
 # 1. Page Configuration & Custom Theme (60-30-10 Rule)
@@ -286,7 +287,7 @@ df = df_raw.replace({"ÿ": 0}, regex=True)
 df.dropna(subset=["Date/Time"], inplace=True)
 
 # Keep these despite the regex drop
-keep_cols = {H2_CONC_COL, H2_AREA_COL, "RF_H2", "H2_corrected_conc"}
+keep_cols = {H2_AREA_COL, "RF_H2", "H2_corrected_conc"}
 cols_to_drop = [
     c
     for c in df.columns
@@ -1263,6 +1264,12 @@ try:
         df1 = df1.dropna(subset=["TOS_h", "Reactor"]).sort_values(["Reactor", "TOS_h"])
         df1["Reactor_num"] = pd.to_numeric(df1["Reactor"], errors="coerce")
 
+        # --- Make the last plot respect the TOS_h slider ---
+        # pt_Selection is your tuple (min_tos_h, max_tos_h) from "Select Data Range (TOS_h):"
+        df1 = df1[
+            (df1["TOS_h"] >= pt_Selection[0]) & (df1["TOS_h"] <= pt_Selection[1])
+        ].copy()
+
         # Plot UI
         plot_ph = st.empty()
         with st.container():
@@ -1280,6 +1287,7 @@ try:
         if df1_filtered.empty:
             plot_ph.info("No data matches selected reactors.")
         else:
+            # σ computed from Measured (GC)
             std_by_r = (
                 df1_filtered.dropna(subset=["Nap/H2_GC"])
                 .groupby("Reactor_num")["Nap/H2_GC"]
@@ -1287,7 +1295,6 @@ try:
             )
 
             fig_ratio = go.Figure()
-            from plotly.colors import n_colors
 
             reactors_in_plot = sel_r_ratio
             if len(reactors_in_plot) == 1:
@@ -1308,32 +1315,49 @@ try:
 
             for r in sel_r_ratio:
                 d = df1_filtered[df1_filtered["Reactor_num"] == r]
+                if d.empty:
+                    continue
+
                 color = color_map_ratio[r]
                 sigma = std_by_r.get(r, np.nan)
-                lbl = (
-                    f"(Supplied)Reactor {r} (σ={sigma:.3g})"
-                    if np.isfinite(sigma)
-                    else f"Reactor {r} (σ=NA)"
-                )
 
+                # --- Supplied (dashed) --- no legend entry
                 fig_ratio.add_trace(
                     go.Scatter(
                         x=d["TOS_h"],
                         y=d["Nap/H2_mass ratio"],
                         mode="lines",
-                        name=lbl,
+                        name=f"Reactor {r} – Supplied",  # won't show as legend below
                         line=dict(color=color, width=2, dash="dash"),
                         marker=dict(size=6),
+                        hovertemplate="TOS_h: %{x}<br>Nap/H2_Supplied: %{y:.3f}",
+                        showlegend=False,  # <<< key line
+                        legendgroup=f"R{r}",
                     )
+                )
+
+                # --- Measured (solid) --- legend with sigma from Nap/H2_GC
+                lbl_meas = (
+                    f"Reactor {r} (σ={sigma:.3g})"
+                    if np.isfinite(sigma)
+                    else f"Reactor {r} (σ=NA)"
                 )
                 fig_ratio.add_trace(
                     go.Scatter(
                         x=d["TOS_h"],
                         y=d["Nap/H2_GC"],
                         mode="lines+markers",
-                        name=f"Measured R{r}",
+                        name=lbl_meas,  # <<< sigma shown here
                         line=dict(color=color, width=2),
-                        showlegend=False,
+                        marker=dict(
+                            size=10,
+                            symbol="circle",
+                            line=dict(width=1, color="rgba(255,255,255,1)"),
+                            color="rgba(0,0,0,0)",
+                        ),
+                        hovertemplate="TOS_h: %{x}<br>Nap/H2_Measured (GC): %{y:.3f}",
+                        showlegend=True,
+                        legendgroup=f"R{r}",
                     )
                 )
 
@@ -1342,7 +1366,7 @@ try:
                 paper_bgcolor="#0A0A0A",
                 plot_bgcolor="#121212",
                 xaxis_title="TOS (hours)",
-                yaxis_title="Ratio Value",
+                yaxis_title="Nap/H2 Mass Ratio",
                 legend=dict(
                     orientation="h",
                     yanchor="bottom",
@@ -1351,8 +1375,15 @@ try:
                     x=1,
                     font=dict(color="white"),
                 ),
+                margin=dict(t=70, r=20, b=40, l=50),
             )
             fig_ratio.update_yaxes(gridcolor="#32322f")
+
+            # Optional: Cue for users
+            st.caption(
+                "Dashed = Nap/H₂ Supplied; Solid = Nap/H₂ Measured (GC). σ shown for Measured."
+            )
+
             plot_ph.plotly_chart(fig_ratio, use_container_width=True)
 
 except Exception as e:
