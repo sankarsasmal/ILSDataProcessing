@@ -24,8 +24,10 @@ st.markdown(
     ========================================= */
 /* 60% Primary (Background) */
 .stApp, .main { background-color: #0A0A0A; color: #FFFFFF; }
+
 /* 30% Secondary (Text/Cards/Containers) */
 h1, h2, h3, h4, h5, h6, p, span, label { color: #FFFFFF !important; }
+
 /* Box Borders - Updated to #32322f */
 [data-testid="stExpander"] {
     background-color: #121212;
@@ -33,7 +35,8 @@ h1, h2, h3, h4, h5, h6, p, span, label { color: #FFFFFF !important; }
     border-radius: 8px;
 }
 [data-testid="stHeader"] { background-color: rgba(10, 10, 10, 0.8); }
-/* 10% Accent (Neon Green: #BFFF00) */
+
+/* 10% Accent Buttons */
 .stButton > button {
     background-color: #BFFF00 !important;
     color: #000000 !important;
@@ -48,7 +51,8 @@ h1, h2, h3, h4, h5, h6, p, span, label { color: #FFFFFF !important; }
 /* =========================================
     COMPONENT OVERRIDES
     ========================================= */
-/* --- Slider Sliding Line and Thumb Color Fix --- */
+
+/* Slider */
 .stSlider div[data-baseweb="slider"] div[role="slider"] {
     background-color: #f20014 !important;
     border-color: #f20014 !important;
@@ -59,17 +63,20 @@ h1, h2, h3, h4, h5, h6, p, span, label { color: #FFFFFF !important; }
 .stSlider div[data-baseweb="slider"] div > div > div > div[style*="background-color"] {
     background-color: #99CC00 !important;
 }
-/* --- Checkbox Fix: Remove highlight, keep bold white text --- */
+
+/* Checkbox text */
 .stCheckbox label span {
     background-color: transparent !important;
     color: #FFFFFF !important;
     font-weight: bold !important;
 }
-/* --- Input/Number Boxes Border Fix --- */
+
+/* Input Box */
 div[data-baseweb="input"] > div {
     border: 1px solid #32322f !important;
 }
-/* --- File Uploader Fix: Black text, #121212 background, Custom border --- */
+
+/* File Upload */
 [data-testid="stFileUploader"] label,
 [data-testid="stFileUploader"] p,
 [data-testid="stFileUploader"] span,
@@ -82,7 +89,8 @@ div[data-baseweb="input"] > div {
     background-color: #121212 !important;
     border: 1px dashed #32322f !important;
 }
-/* --- Dropdown (Select/Multiselect) Background, Text, Placeholder & Border Update --- */
+
+/* Dropdown */
 div[data-baseweb="select"] > div {
     background-color: #121212 !important;
     border: 1px solid #32322f !important;
@@ -92,8 +100,6 @@ div[data-baseweb="select"] * {
 }
 div[data-baseweb="select"] input::placeholder {
     color: #FFFFFF !important;
-    opacity: 1 !important;
-    -webkit-text-fill-color: #FFFFFF !important;
 }
 ul[role="listbox"] {
     background-color: #121212 !important;
@@ -102,7 +108,8 @@ ul[role="listbox"] {
 ul[role="listbox"] li {
     color: #FFFFFF !important;
 }
-/* --- Multiselect Dropdown & Tag Highlight Color Update --- */
+
+/* Multiselect Tag */
 span[data-baseweb="tag"] {
     background-color: #f20014 !important;
     color: #000000 !important;
@@ -113,23 +120,49 @@ ul[role="listbox"] li[aria-selected="false"]:hover {
     background-color: #f20014 !important;
     color: #000000 !important;
 }
-/* --- Metric Color Fix: Ensure metric labels and values are white --- */
-[data-testid="stMetricValue"], [data-testid="stMetricLabel"] {
+
+/* Metric */
+[data-testid="stMetricValue"], 
+[data-testid="stMetricLabel"] {
     color: #FFFFFF !important;
 }
-/* =========================================
-    CUSTOM DEMARCATION HEADERS
-    ========================================= */
+
+/* Section Header */
 .section-header {
     color: #BFFF00 !important;
     text-transform: uppercase;
     letter-spacing: 1.5px;
     font-size: 16px;
     font-weight: bold;
-    border-bottom: 2px solid #32322f !important; /* Changed from #222 */
+    border-bottom: 2px solid #32322f !important;
     padding-bottom: 8px;
     margin-top: 40px;
     margin-bottom: 20px;
+}
+
+/* =========================================
+    NEW — UNIFIED LIGHT-GRAY BORDER FOR ALL:
+    CHECKBOX, RADIO, TOGGLE(SWITCH)
+    ========================================= */
+
+/* Checkbox square */
+input[type="checkbox"] {
+    border: 2px solid #d3d3d3 !important;
+}
+
+/* Radio circle */
+input[type="radio"] {
+    border: 2px solid #d3d3d3 !important;
+}
+
+/* Toggle / Switch (Streamlit uses BaseWeb) */
+[data-baseweb="switch"] > div {
+    border: 2px solid #d3d3d3 !important;
+}
+
+/* Toggle knob */
+[data-baseweb="switch"] div[role="switch"] {
+    border: 2px solid #d3d3d3 !important;
 }
 </style>
 """,
@@ -1394,3 +1427,4 @@ try:
 
 except Exception as e:
     st.error(f"Error calculating Nap/H2 Ratio: {repr(e)}")
+
